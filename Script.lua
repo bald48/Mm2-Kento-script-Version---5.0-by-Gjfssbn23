@@ -13,9 +13,10 @@ local VirtualUser = game:GetService("VirtualUser")
 local Stats = game:GetService("Stats")
 local StarterGui = game:GetService("StarterGui")
 local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
 
 local AUTHOR = "@Gjfssbn23"
-local VERSION = "5.0"
+local VERSION = "6.0"
 
 local function Notify(text, dur)
     pcall(function()
@@ -78,6 +79,7 @@ local Window = WindUI:CreateWindow({
     OutlineThickness = 2,
 })
 
+-- ==================== ЗОЛОТАЯ ОБВОДКА ====================
 task.spawn(function()
     task.wait(0.8)
     local GOLD = Color3.fromHex("#FFD700")
@@ -119,7 +121,6 @@ task.spawn(function()
     end
 
     local function ScanAll()
-        local CoreGui = game:GetService("CoreGui")
         for _, gui in ipairs(CoreGui:GetChildren()) do
             pcall(function() Walk(gui) end)
         end
@@ -138,7 +139,7 @@ task.spawn(function()
     end
 end)
 
-local AimAssist_Enabled = false
+-- ==================== ПЕРЕМЕННЫЕ ====================
 local WallCheck_Enabled = false
 local AutoGrabGun_Enabled = false
 local ESP_Enabled = false
@@ -157,12 +158,20 @@ local FOV_Enabled = false
 local FOVValue = 70
 local AntiAFK_Enabled = false
 local SafeFarm_Enabled = false
-local AimSmoothness = 0.1
 local SelectedPlayer = nil
 local SelectedTrollPlayer = nil
 local espHighlights = {}
+local hitboxOriginal = {}
 local fps = 60
 
+local AutoShoot_Enabled = false
+local AutoShoot_FOV = 200
+local SoftAim_Enabled = false
+local SoftAim_FOV = 100
+local SoftAim_Smooth = 0.25
+local SoftAim_Head = false
+
+-- ==================== HELPERS ====================
 local function GetHRP()
     local char = LocalPlayer.Character
     return char and char:FindFirstChild("HumanoidRootPart")
@@ -200,9 +209,18 @@ local function HasGun()
 end
 
 local function GetGun()
-    for _, item in ipairs(Workspace:GetChildren()) do
-        if item:IsA("BasePart") and item.Name == "GunDrop" then
-            return item
+    local names = { "GunDrop", "Gun", "GunPickup", "GunModel", "GunSpawn" }
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            if table.find(names, obj.Name) then
+                return obj
+            end
+            if obj.Parent and obj.Parent:IsA("Model") then
+                local pn = obj.Parent.Name
+                if pn == "Gun" or pn == "GunDrop" or pn == "GunPickup" then
+                    return obj
+                end
+            end
         end
     end
     return nil
@@ -234,6 +252,79 @@ local function IsRoundActive()
     return false
 end
 
+local function FindBestTarget(maxPixels, headMode)
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil end
+    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local best, bestDist = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                if GetPlayerRole(player) == "Murderer" then
+                    local part
+                    if headMode then
+                        part = char:FindFirstChild("Head")
+                    else
+                        part = char:FindFirstChild("HumanoidRootPart")
+                    end
+                    if part then
+                        local screenPos, onScreen = cam:WorldToScreenPoint(part.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                            if dist < maxPixels and dist < bestDist then
+                                if not WallCheck_Enabled or CanSeeTarget(part.Position) then
+                                    best = part
+                                    bestDist = dist
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function Shoot()
+    pcall(function() VirtualUser:Button1Down(Vector2.new(0, 0)) end)
+    pcall(function() VirtualUser:Button1Up(Vector2.new(0, 0)) end)
+    pcall(function() VirtualUser:ClickButton2(Vector2.new(0, 0)) end)
+end
+
+local function RestoreHitbox(char)
+    pcall(function()
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and hitboxOriginal[part] then
+                part.Size = hitboxOriginal[part].size
+                part.Transparency = hitboxOriginal[part].trans
+                hitboxOriginal[part] = nil
+            end
+        end
+    end)
+end
+
+local function ApplyHitbox(char, size, trans)
+    pcall(function()
+        if not char then return end
+        local parts = { "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart" }
+        for _, partName in ipairs(parts) do
+            local part = char:FindFirstChild(partName)
+            if part and part:IsA("BasePart") then
+                if not hitboxOriginal[part] then
+                    hitboxOriginal[part] = { size = part.Size, trans = part.Transparency }
+                end
+                part.Size = Vector3.new(size, size, size)
+                part.Transparency = trans
+            end
+        end
+    end)
+end
+
+-- ==================== MAIN TAB ====================
 local MainTab = Window:Tab({ Title = "👤 Main", Icon = "user" })
 local InfoPara = MainTab:Paragraph({ Title = "📊 Player Info", Desc = "Loading..." })
 local RolesPara = MainTab:Paragraph({ Title = "🎭 Roles", Desc = "Loading..." })
@@ -308,7 +399,9 @@ MainTab:Button({
     end
 })
 
+-- ==================== VISUALS ====================
 local VisualsTab = Window:Tab({ Title = "💥 Visuals", Icon = "eye" })
+local ESPStatus = VisualsTab:Paragraph({ Title = "📊 ESP Status", Desc = "Выключено" })
 
 local function CreateESPHighlight(character, color)
     if not character or espHighlights[character] then return end
@@ -334,6 +427,7 @@ VisualsTab:Toggle({
                 pcall(function() if hl then hl:Destroy() end end)
                 espHighlights[char] = nil
             end
+            ESPStatus:SetDesc("Выключено")
         end
     end
 })
@@ -342,6 +436,7 @@ task.spawn(function()
     while task.wait(0.5) do
         if ESP_Enabled then
             pcall(function()
+                local cnt = 0
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p ~= LocalPlayer and p.Character then
                         local role = GetPlayerRole(p)
@@ -351,11 +446,14 @@ task.spawn(function()
                         local hl = espHighlights[p.Character]
                         if hl and hl.Parent then
                             if hl.FillColor ~= color then hl.FillColor = color end
+                            cnt = cnt + 1
                         else
                             CreateESPHighlight(p.Character, color)
+                            cnt = cnt + 1
                         end
                     end
                 end
+                ESPStatus:SetDesc("✅ Активно: " .. cnt .. " целей")
             end)
         end
     end
@@ -398,19 +496,51 @@ VisualsTab:Slider({
     Callback = function(v) FOVValue = v end
 })
 
+-- ==================== COMBAT ====================
 local CombatTab = Window:Tab({ Title = "⚔️ Combat", Icon = "swords" })
 
+CombatTab:Paragraph({
+    Title = "🎯 Аимы",
+    Desc = "Можно включать оба сразу"
+})
+
 CombatTab:Toggle({
-    Title = "AimAssist Gun (Mobile)",
+    Title = "🎯 Auto-Shoot",
     Value = false,
-    Callback = function(v) AimAssist_Enabled = v end
+    Callback = function(v) AutoShoot_Enabled = v end
 })
 
 CombatTab:Slider({
-    Title = "Smoothness",
-    Value = { Min = 0.05, Max = 0.5, Default = 0.1 },
+    Title = "Auto-Shoot FOV (px)",
+    Value = { Min = 30, Max = 500, Default = 200 },
+    Step = 10,
+    Callback = function(v) AutoShoot_FOV = v end
+})
+
+CombatTab:Toggle({
+    Title = "🎯 Soft Aim (плавно)",
+    Value = false,
+    Callback = function(v) SoftAim_Enabled = v end
+})
+
+CombatTab:Slider({
+    Title = "Soft Aim FOV (px)",
+    Value = { Min = 20, Max = 250, Default = 100 },
+    Step = 5,
+    Callback = function(v) SoftAim_FOV = v end
+})
+
+CombatTab:Slider({
+    Title = "Soft Aim Smoothness",
+    Value = { Min = 0.05, Max = 0.5, Default = 0.25 },
     Step = 0.05,
-    Callback = function(v) AimSmoothness = v end
+    Callback = function(v) SoftAim_Smooth = v end
+})
+
+CombatTab:Toggle({
+    Title = "Soft Aim — в голову",
+    Value = false,
+    Callback = function(v) SoftAim_Head = v end
 })
 
 CombatTab:Toggle({
@@ -425,17 +555,9 @@ CombatTab:Toggle({
     Callback = function(v)
         Hitbox_Enabled = v
         if not v then
-            pcall(function()
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then
-                        local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-                        if hrp then
-                            hrp.Size = Vector3.new(2, 2, 1)
-                            hrp.Transparency = 0
-                        end
-                    end
-                end
-            end)
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Character then RestoreHitbox(p.Character) end
+            end
         end
     end
 })
@@ -461,7 +583,126 @@ CombatTab:Dropdown({
     Callback = function(option) HitboxTarget = option end
 })
 
+local HitboxStatus = CombatTab:Paragraph({ Title = "📊 Hitbox Status", Desc = "Выключено" })
+local AimStatus = CombatTab:Paragraph({ Title = "📊 Aim Status", Desc = "Выключено" })
+local AimTarget = CombatTab:Paragraph({ Title = "🎯 Цель", Desc = "—" })
+local AimDiag = CombatTab:Paragraph({ Title = "🔧 Диагностика", Desc = "Жду..." })
+
+task.spawn(function()
+    while task.wait(0.5) do
+        pcall(function()
+            local parts = {}
+            if AutoShoot_Enabled then table.insert(parts, "Auto-Shoot") end
+            if SoftAim_Enabled then table.insert(parts, "Soft Aim") end
+            local text = #parts > 0 and table.concat(parts, " + ") or "Выключено"
+            AimStatus:SetDesc("🎯 " .. text)
+
+            if AutoShoot_Enabled or SoftAim_Enabled then
+                local tgt = FindBestTarget(AutoShoot_Enabled and AutoShoot_FOV or SoftAim_FOV, SoftAim_Head)
+                if tgt then
+                    local nm = "?"
+                    for _, pl in ipairs(Players:GetPlayers()) do
+                        if pl.Character and tgt:IsDescendantOf(pl.Character) then
+                            nm = pl.Name
+                            break
+                        end
+                    end
+                    AimTarget:SetDesc("✅ Вижу: " .. nm)
+                    local c = Workspace.CurrentCamera
+                    local sp = c:WorldToScreenPoint(tgt.Position)
+                    local center = Vector2.new(c.ViewportSize.X / 2, c.ViewportSize.Y / 2)
+                    local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    AimDiag:SetDesc(string.format("✅ Цель в %d px от центра", math.floor(dist)))
+                else
+                    AimTarget:SetDesc("❌ Убийца не в прицеле")
+                    local has = false
+                    for _, pl in ipairs(Players:GetPlayers()) do
+                        if pl ~= LocalPlayer and GetPlayerRole(pl) == "Murderer" then
+                            has = true
+                            break
+                        end
+                    end
+                    if not has then
+                        AimDiag:SetDesc("⚠️ Убийцы нет в раунде")
+                    else
+                        AimDiag:SetDesc("⚠️ Убийца вне радиуса FOV")
+                    end
+                end
+            else
+                AimTarget:SetDesc("—")
+                AimDiag:SetDesc("Жду включения")
+            end
+        end)
+    end
+end)
+
+task.spawn(function()
+    local lastShot = 0
+    while task.wait(0.05) do
+        if AutoShoot_Enabled then
+            pcall(function()
+                if not HasGun() then return end
+                local target = FindBestTarget(AutoShoot_FOV, false)
+                if target and (tick() - lastShot) > 0.1 then
+                    Shoot()
+                    lastShot = tick()
+                end
+            end)
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.3) do
+        pcall(function()
+            if Hitbox_Enabled then
+                local cnt = 0
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character then
+                        local isTarget = (HitboxTarget == "All") or (GetPlayerRole(p) == HitboxTarget)
+                        if isTarget then
+                            ApplyHitbox(p.Character, HitboxSize, HitboxTransparency)
+                            cnt = cnt + 1
+                        else
+                            RestoreHitbox(p.Character)
+                        end
+                    end
+                end
+                HitboxStatus:SetDesc("✅ Активно: " .. cnt .. " целей")
+            else
+                HitboxStatus:SetDesc("Выключено")
+            end
+        end)
+    end
+end)
+
+for _, pl in ipairs(Players:GetPlayers()) do
+    if pl ~= LocalPlayer then
+        pl.CharacterAdded:Connect(function(char)
+            task.wait(0.5)
+            if Hitbox_Enabled and char and char.Parent then
+                if (HitboxTarget == "All") or (GetPlayerRole(pl) == HitboxTarget) then
+                    ApplyHitbox(char, HitboxSize, HitboxTransparency)
+                end
+            end
+        end)
+    end
+end
+
+Players.PlayerAdded:Connect(function(pl)
+    pl.CharacterAdded:Connect(function(char)
+        task.wait(0.5)
+        if Hitbox_Enabled and char and char.Parent then
+            if (HitboxTarget == "All") or (GetPlayerRole(pl) == HitboxTarget) then
+                ApplyHitbox(char, HitboxSize, HitboxTransparency)
+            end
+        end
+    end)
+end)
+
+-- ==================== AUTOMATION ====================
 local AutoTab = Window:Tab({ Title = "🤖 Automation", Icon = "bot" })
+local AutoGunStatus = AutoTab:Paragraph({ Title = "📊 Auto Gun", Desc = "Выключено" })
 
 AutoTab:Toggle({
     Title = "Auto Grab Gun",
@@ -471,32 +712,57 @@ AutoTab:Toggle({
 
 task.spawn(function()
     local lastGrabTime = 0
-    while task.wait(0.1) do
+    while task.wait(0.5) do
         if AutoGrabGun_Enabled then
             pcall(function()
+                if HasGun() then
+                    AutoGunStatus:SetDesc("✅ Пушка уже в руках")
+                    return
+                end
                 local gun = GetGun()
                 local hrp = GetHRP()
                 local hum = GetHum()
-                if gun and hrp and hum and hum.Health > 0 then
-                    local dist = (hrp.Position - gun.Position).Magnitude
-                    if dist < 150 and (os.clock() - lastGrabTime) > 2 then
-                        local murdererClose = false
-                        for _, p in ipairs(Players:GetPlayers()) do
-                            if p ~= LocalPlayer and GetPlayerRole(p) == "Murderer" then
-                                local phrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                                if phrp and (phrp.Position - gun.Position).Magnitude < 10 then
-                                    murdererClose = true
-                                    break
-                                end
+                if not gun then
+                    AutoGunStatus:SetDesc("❌ Пушка не найдена на карте")
+                    return
+                end
+                if not hrp or not hum or hum.Health <= 0 then
+                    AutoGunStatus:SetDesc("⚠️ Персонаж мёртв")
+                    return
+                end
+                local dist = (hrp.Position - gun.Position).Magnitude
+                AutoGunStatus:SetDesc(string.format("🎯 Дистанция: %d", math.floor(dist)))
+
+                if dist < 250 and (os.clock() - lastGrabTime) > 1.5 then
+                    local murdererClose = false
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p ~= LocalPlayer and GetPlayerRole(p) == "Murderer" then
+                            local phrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                            if phrp and (phrp.Position - gun.Position).Magnitude < 12 then
+                                murdererClose = true
+                                break
                             end
                         end
-                        if not murdererClose then
-                            local oldCFrame = hrp.CFrame
-                            hrp.CFrame = gun.CFrame * CFrame.new(0, 3, 0)
-                            task.wait(0.05)
-                            hrp.CFrame = oldCFrame
-                            lastGrabTime = os.clock()
+                    end
+                    if murdererClose then
+                        AutoGunStatus:SetDesc("⚠️ Убийца рядом — не рискую")
+                    else
+                        local oldCFrame = hrp.CFrame
+                        local oldCollide = {}
+                        for _, pt in ipairs(LocalPlayer.Character:GetDescendants()) do
+                            if pt:IsA("BasePart") then
+                                oldCollide[pt] = pt.CanCollide
+                                pt.CanCollide = false
+                            end
                         end
+                        hrp.CFrame = gun.CFrame * CFrame.new(0, 2, 0)
+                        task.wait(0.1)
+                        hrp.CFrame = oldCFrame
+                        for pt, val in pairs(oldCollide) do
+                            pcall(function() pt.CanCollide = val end)
+                        end
+                        lastGrabTime = os.clock()
+                        AutoGunStatus:SetDesc("✅ Забрал пушку!")
                     end
                 end
             end)
@@ -558,6 +824,7 @@ task.spawn(function()
     end
 end)
 
+-- ==================== MOVEMENT ====================
 local MoveTab = Window:Tab({ Title = "🏃 Movement", Icon = "zap" })
 
 MoveTab:Slider({
@@ -620,6 +887,7 @@ MoveTab:Slider({
     Callback = function(v) FlySpeed = v end
 })
 
+-- ==================== TELEPORT ====================
 local TpTab = Window:Tab({ Title = "📍 Teleport", Icon = "map-pin" })
 
 local function PlayerNames()
@@ -703,16 +971,13 @@ TpTab:Button({
         pcall(function()
             local hrp = GetHRP()
             if not hrp then return end
-
             local lobbyPos = nil
-
             for _, obj in ipairs(Workspace:GetDescendants()) do
                 if obj:IsA("SpawnLocation") and obj.Parent then
                     lobbyPos = obj.Position + Vector3.new(0, 3, 0)
                     break
                 end
             end
-
             if not lobbyPos then
                 for _, obj in ipairs(Workspace:GetDescendants()) do
                     if obj:IsA("BasePart") then
@@ -724,7 +989,6 @@ TpTab:Button({
                     end
                 end
             end
-
             if not lobbyPos then
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p ~= LocalPlayer and p.Character then
@@ -736,11 +1000,7 @@ TpTab:Button({
                     end
                 end
             end
-
-            if not lobbyPos then
-                lobbyPos = Vector3.new(0, 100, 0)
-            end
-
+            if not lobbyPos then lobbyPos = Vector3.new(0, 100, 0) end
             hrp.CFrame = CFrame.new(lobbyPos)
         end)
     end
@@ -764,6 +1024,7 @@ TpTab:Button({
     end
 })
 
+-- ==================== TROLLING ====================
 local TrollTab = Window:Tab({ Title = "😈 Trolling", Icon = "zap" })
 
 TrollTab:Paragraph({
@@ -908,6 +1169,7 @@ TrollTab:Button({
     end
 })
 
+-- ==================== MISC ====================
 local MiscTab = Window:Tab({ Title = "🔧 Misc", Icon = "settings" })
 
 MiscTab:Button({
@@ -948,13 +1210,15 @@ MiscTab:Button({
     end
 })
 
+-- ==================== INFO ====================
 local InfoTab = Window:Tab({ Title = "ℹ️ Info", Icon = "info" })
 
 InfoTab:Paragraph({
     Title = "🟨 Kento Hub MM2",
-    Desc = "Author: " .. AUTHOR .. "\nVersion: " .. VERSION .. "\n\n© All rights reserved.\nРаспространение без разрешения автора запрещено."
+    Desc = "Author: " .. AUTHOR .. "\nVersion: " .. VERSION .. "\n\n© All rights reserved."
 })
 
+-- ==================== RENDER LOOP ====================
 RunService.RenderStepped:Connect(function(dt)
     fps = math.floor(1 / math.max(dt, 0.001))
 
@@ -972,55 +1236,20 @@ RunService.RenderStepped:Connect(function(dt)
         pcall(function() Workspace.CurrentCamera.FieldOfView = FOVValue end)
     end
 
-    if AimAssist_Enabled and HasGun() then
-        local now = tick()
-        if not _G._lastAim or (now - _G._lastAim) > 0.05 then
-            _G._lastAim = now
-            pcall(function()
-                local cam = Workspace.CurrentCamera
-                local targetPlayer = nil
-                local closestAngle = math.huge
-                for _, player in ipairs(Players:GetPlayers()) do
-                    if player ~= LocalPlayer then
-                        local character = player.Character
-                        if character then
-                            local hrp = character:FindFirstChild("HumanoidRootPart")
-                            local humanoid = character:FindFirstChildOfClass("Humanoid")
-                            if hrp and humanoid and humanoid.Health > 0 then
-                                local isKnife = character:FindFirstChild("Knife")
-                                local bpc = player:FindFirstChild("Backpack")
-                                local backpackKnife = bpc and bpc:FindFirstChild("Knife")
-                                if isKnife or backpackKnife then
-                                    local skip = false
-                                    if WallCheck_Enabled and not CanSeeTarget(hrp.Position) then
-                                        skip = true
-                                    end
-                                    if not skip then
-                                        local targetScreenPos = cam:WorldToScreenPoint(hrp.Position)
-                                        local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-                                        local screenPos = Vector2.new(targetScreenPos.X, targetScreenPos.Y)
-                                        local angle = (screenPos - screenCenter).Magnitude
-                                        if angle < closestAngle and angle < 300 then
-                                            closestAngle = angle
-                                            targetPlayer = hrp
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-                if targetPlayer then
-                    local targetPos = targetPlayer.Position + Vector3.new(0, 0.8, 0)
-                    local currentCFrame = cam.CFrame
-                    local newCFrame = CFrame.new(currentCFrame.Position, targetPos)
-                    cam.CFrame = currentCFrame:Lerp(newCFrame, AimSmoothness)
-                end
-            end)
-        end
+    if SoftAim_Enabled and HasGun() then
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            local target = FindBestTarget(SoftAim_FOV, SoftAim_Head)
+            if target then
+                local currentCFrame = cam.CFrame
+                local newCFrame = CFrame.new(currentCFrame.Position, target.Position)
+                cam.CFrame = currentCFrame:Lerp(newCFrame, SoftAim_Smooth)
+            end
+        end)
     end
 end)
 
+-- ==================== HEARTBEAT ====================
 RunService.Heartbeat:Connect(function()
     pcall(function()
         local hum, hrp = GetHum(), GetHRP()
@@ -1065,36 +1294,14 @@ RunService.Heartbeat:Connect(function()
     end)
 end)
 
-task.spawn(function()
-    while task.wait(0.5) do
-        pcall(function()
-            if Hitbox_Enabled then
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then
-                        local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-                        if hrp then
-                            local isTarget = (HitboxTarget == "All") or (GetPlayerRole(p) == HitboxTarget)
-                            if isTarget then
-                                hrp.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
-                                hrp.Transparency = HitboxTransparency
-                            else
-                                hrp.Size = Vector3.new(2, 2, 1)
-                                hrp.Transparency = 0
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-    end
-end)
-
+-- ==================== CLEANUP ====================
 Players.PlayerRemoving:Connect(function(p)
     roleCache[p] = nil
     if espHighlights[p.Character] then
         pcall(function() espHighlights[p.Character]:Destroy() end)
         espHighlights[p.Character] = nil
     end
+    if p.Character then RestoreHitbox(p.Character) end
 end)
 
 Notify("✅ Kento Hub MM2 v" .. VERSION .. " | " .. AUTHOR, 4)
