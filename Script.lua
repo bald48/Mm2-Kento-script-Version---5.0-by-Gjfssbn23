@@ -547,7 +547,9 @@ task.spawn(function()
                 local done = false
                 local c = tween.Completed:Connect(function() done = true end)
                 local start = os.clock()
-                while not done and SafeFarm_Enabled and (os.clock() - start) < (duration + 1) do task.wait() end
+                while not done and SafeFarm_Enabled and (os.clock() - start) < (duration + 1) do
+                    task.wait(0.05)
+                end
                 c:Disconnect()
                 if not SafeFarm_Enabled then tween:Cancel() end
                 task.wait(0.3)
@@ -700,9 +702,46 @@ TpTab:Button({
     Callback = function()
         pcall(function()
             local hrp = GetHRP()
-            if hrp then
-                hrp.CFrame = CFrame.new(Vector3.new(0, 50, 0) + Vector3.new(0, 3, 0))
+            if not hrp then return end
+
+            local lobbyPos = nil
+
+            for _, obj in ipairs(Workspace:GetDescendants()) do
+                if obj:IsA("SpawnLocation") and obj.Parent then
+                    lobbyPos = obj.Position + Vector3.new(0, 3, 0)
+                    break
+                end
             end
+
+            if not lobbyPos then
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        local n = obj.Name:lower()
+                        if n:find("lobby") or n:find("waiting") or n:find("spawn") then
+                            lobbyPos = obj.Position + Vector3.new(0, 3, 0)
+                            break
+                        end
+                    end
+                end
+            end
+
+            if not lobbyPos then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character then
+                        local phrp = p.Character:FindFirstChild("HumanoidRootPart")
+                        if phrp then
+                            lobbyPos = phrp.Position + Vector3.new(0, 3, 5)
+                            break
+                        end
+                    end
+                end
+            end
+
+            if not lobbyPos then
+                lobbyPos = Vector3.new(0, 100, 0)
+            end
+
+            hrp.CFrame = CFrame.new(lobbyPos)
         end)
     end
 })
@@ -934,47 +973,51 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     if AimAssist_Enabled and HasGun() then
-        pcall(function()
-            local cam = Workspace.CurrentCamera
-            local targetPlayer = nil
-            local closestAngle = math.huge
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer then
-                    local character = player.Character
-                    if character then
-                        local hrp = character:FindFirstChild("HumanoidRootPart")
-                        local humanoid = character:FindFirstChildOfClass("Humanoid")
-                        if hrp and humanoid and humanoid.Health > 0 then
-                            local isKnife = character:FindFirstChild("Knife")
-                            local bpc = player:FindFirstChild("Backpack")
-                            local backpackKnife = bpc and bpc:FindFirstChild("Knife")
-                            if isKnife or backpackKnife then
-                                local skip = false
-                                if WallCheck_Enabled and not CanSeeTarget(hrp.Position) then
-                                    skip = true
-                                end
-                                if not skip then
-                                    local targetScreenPos = cam:WorldToScreenPoint(hrp.Position)
-                                    local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-                                    local screenPos = Vector2.new(targetScreenPos.X, targetScreenPos.Y)
-                                    local angle = (screenPos - screenCenter).Magnitude
-                                    if angle < closestAngle and angle < 300 then
-                                        closestAngle = angle
-                                        targetPlayer = hrp
+        local now = tick()
+        if not _G._lastAim or (now - _G._lastAim) > 0.05 then
+            _G._lastAim = now
+            pcall(function()
+                local cam = Workspace.CurrentCamera
+                local targetPlayer = nil
+                local closestAngle = math.huge
+                for _, player in ipairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer then
+                        local character = player.Character
+                        if character then
+                            local hrp = character:FindFirstChild("HumanoidRootPart")
+                            local humanoid = character:FindFirstChildOfClass("Humanoid")
+                            if hrp and humanoid and humanoid.Health > 0 then
+                                local isKnife = character:FindFirstChild("Knife")
+                                local bpc = player:FindFirstChild("Backpack")
+                                local backpackKnife = bpc and bpc:FindFirstChild("Knife")
+                                if isKnife or backpackKnife then
+                                    local skip = false
+                                    if WallCheck_Enabled and not CanSeeTarget(hrp.Position) then
+                                        skip = true
+                                    end
+                                    if not skip then
+                                        local targetScreenPos = cam:WorldToScreenPoint(hrp.Position)
+                                        local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+                                        local screenPos = Vector2.new(targetScreenPos.X, targetScreenPos.Y)
+                                        local angle = (screenPos - screenCenter).Magnitude
+                                        if angle < closestAngle and angle < 300 then
+                                            closestAngle = angle
+                                            targetPlayer = hrp
+                                        end
                                     end
                                 end
                             end
                         end
                     end
                 end
-            end
-            if targetPlayer then
-                local targetPos = targetPlayer.Position + Vector3.new(0, 0.8, 0)
-                local currentCFrame = cam.CFrame
-                local newCFrame = CFrame.new(currentCFrame.Position, targetPos)
-                cam.CFrame = currentCFrame:Lerp(newCFrame, AimSmoothness)
-            end
-        end)
+                if targetPlayer then
+                    local targetPos = targetPlayer.Position + Vector3.new(0, 0.8, 0)
+                    local currentCFrame = cam.CFrame
+                    local newCFrame = CFrame.new(currentCFrame.Position, targetPos)
+                    cam.CFrame = currentCFrame:Lerp(newCFrame, AimSmoothness)
+                end
+            end)
+        end
     end
 end)
 
@@ -1013,15 +1056,13 @@ RunService.Heartbeat:Connect(function()
                 flyBV.Velocity = Vector3.zero
             end
         end
-    end)
-end)
 
-RunService.Stepped:Connect(function()
-    if (Noclip_Enabled or SafeFarm_Enabled or Fly_Enabled) and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = false end
+        if Noclip_Enabled and LocalPlayer.Character then
+            for _, part in ipairs(LocalPlayer.Character:GetChildren()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
         end
-    end
+    end)
 end)
 
 task.spawn(function()
